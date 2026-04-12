@@ -1,322 +1,196 @@
-# Go Service Template
-
-Шаблон для создания микросервисов на Go. Включает HTTP-сервер, observability (логи, метрики, трейсы), клиенты для PostgreSQL, Redis и Kafka, middleware-стек и инфраструктуру для тестирования.
-
-## Структура проекта
-
-```
-cmd/service/main.go          # Точка входа. Связывает все компоненты через DI-фреймворк uber/fx
-internal/                    # Пакеты, доступные только внутри модуля (Go convention)
-  config/                    # Загрузка конфигурации: YAML-файл + переменные окружения
-  server/                    # HTTP-сервер на fasthttp, регистрация маршрутов
-  handler/                   # Обработчики запросов (бизнес-логика)
-  middleware/                # Цепочка middleware: Recoverer → RequestID → Tracing → Metrics → Logger
-  apperror/                  # Типизированные ошибки с маппингом на HTTP-статусы
-  validator/                 # Декодирование и валидация JSON-тела запроса
-  logger/                    # Структурированный JSON-логгер (slog)
-  tracing/                   # OpenTelemetry: экспорт трейсов через OTLP/gRPC
-  postgres/                  # Пул соединений pgxpool + миграции (golang-migrate)
-  redis/                     # Клиент go-redis с OTel-инструментацией
-  kafka/                     # Producer и Consumer с трейсингом + Event envelope
-configs/                     # YAML-файлы конфигурации и настройки observability-стека
-migrations/                  # SQL-миграции (golang-migrate)
-docs/                        # Сгенерированная OpenAPI/Swagger спецификация (swaggo/swag)
-Dockerfile                   # Multi-stage сборка, non-root пользователь
-docker-compose.yml           # Сервис + PostgreSQL, Redis, Kafka, Jaeger, Prometheus, Grafana, Loki
-Makefile                     # Команды для сборки, запуска, тестов, Docker, миграций, Swagger
-```
-
-> **Для тех, кто не работал с Go:** директория `internal/` -- это языковая конвенция. Go-компилятор запрещает импорт пакетов из `internal/` другим модулям. Это гарантирует инкапсуляцию.
-
-## Компоненты
-
-### config
-
-**Проблема:** Сервису нужна конфигурация, которая работает одинаково локально (YAML-файл) и в Kubernetes (переменные окружения).
-
-**Решение:** [Viper](https://github.com/spf13/viper) загружает YAML-файл из `configs/`, затем перезаписывает значения переменными окружения. Структура `Config` содержит все параметры сервиса, включая секции `Postgres`, `Redis`, `Kafka`.
-
-**Как расширить:** Добавить новое поле в структуру `Config`, задать default через `v.SetDefault()`, добавить в `config.local.yaml`.
-
-**Как изменить:** Любой ключ конфигурации можно переопределить через переменную окружения. Вложенные ключи разделяются `_`: ключ `postgres.max_conns` -> переменная `POSTGRES_MAX_CONNS`.
-
-### logger
-
-**Проблема:** Логи должны быть структурированными (JSON) для парсинга в Loki/ELK и содержать trace_id для корреляции с трейсами.
-
-**Решение:** Стандартный `log/slog` с JSON-хендлером. Уровень логирования настраивается через конфиг (`debug`, `info`, `warn`, `error`).
-
-**Как изменить:** Уровень логирования -- ключ `log_level` в конфиге или переменная `LOG_LEVEL`.
-
-### tracing
-
-**Проблема:** Нужно отслеживать путь запроса через сервис и между сервисами для диагностики latency и ошибок.
-
-**Решение:** OpenTelemetry с экспортом трейсов по OTLP/gRPC в Jaeger. Пропагация контекста через W3C TraceContext + Baggage. Трейсинг можно отключить через конфиг (`tracing_enabled: false`).
-
-**Как работает trace_id:** Middleware `Tracing` создаёт span для каждого HTTP-запроса. `trace_id` из этого span-а добавляется в каждую строку лога middleware `Logger`. В Grafana можно перейти из лога прямо в трейс.
-
-### middleware
-
-**Проблема:** Каждый запрос должен проходить через одинаковую цепочку обработки: recovery от паник, присвоение request ID, трейсинг, сбор метрик, логирование.
-
-**Решение:** Пять middleware, соединённых через `Chain()`:
-
-| Порядок | Middleware | Что делает |
-|---------|-----------|------------|
-| 1 (внешний) | `Recoverer` | Ловит паники, логирует стек, возвращает 500 |
-| 2 | `RequestID` | Генерирует или берёт из заголовка `X-Request-Id` |
-| 3 | `Tracing` | Создаёт OTel span, извлекает входящий trace context |
-| 4 | `Metrics` | Считает `http_requests_total` и `http_request_duration_seconds` |
-| 5 (внутренний) | `Logger` | Логирует завершённый запрос с duration, status, trace_id |
-
-> **Порядок важен:** `Recoverer` должен быть самым внешним, чтобы поймать панику в любом другом middleware.
-
-**Metrics и кардинальность:** Middleware `Metrics` использует не сырой путь запроса (`/api/v1/playlists/123`), а шаблон маршрута (`/api/v1/playlists/:id`). Это предотвращает взрыв кардинальности меток в Prometheus.
-
-### apperror
-
-**Проблема:** Нужен единый формат ошибок для API и маппинг ошибок бизнес-логики на HTTP-статусы.
-
-**Решение:** Типизированные ошибки с кодом, сообщением и HTTP-статусом:
-
-```go
-apperror.NewNotFound("плейлист не найден")     // 404
-apperror.NewValidation("невалидный ID трека")   // 400
-apperror.NewConflict("трек уже в плейлисте")    // 409
-apperror.NewUnauthorized("токен истёк")          // 401
-apperror.NewInternal("ошибка БД", err)           // 500
-```
-
-Ответ клиенту всегда в формате: `{"error": {"code": "NOT_FOUND", "message": "плейлист не найден"}}`.
-
-**Как добавить новый тип ошибки:** Создать функцию-конструктор в `apperror.go` по аналогии с существующими.
-
-### validator
-
-**Проблема:** Каждый endpoint, принимающий JSON, должен декодировать тело и валидировать поля. Нельзя дублировать эту логику в каждом handler-е.
-
-**Решение:** Функция `BindJSON(ctx, &dst)` в одном вызове декодирует JSON и валидирует структуру. При ошибке возвращает `apperror.Validation` с описанием проблемных полей.
-
-```go
-type CreatePlaylistRequest struct {
-    Name string `json:"name" validate:"required,min=1,max=200"`
-}
-
-func (h *Handler) CreatePlaylist(ctx *fasthttp.RequestCtx) {
-    var req CreatePlaylistRequest
-    if err := validator.BindJSON(ctx, &req); err != nil {
-        handler.WriteError(ctx, err)
-        return
-    }
-    // req.Name гарантированно валиден
-}
-```
-
-**Как добавить кастомную валидацию:** Использовать теги из [go-playground/validator](https://pkg.go.dev/github.com/go-playground/validator/v10#section-documentation), например `validate:"required,email"` или `validate:"gte=0,lte=100"`.
-
-### handler
-
-**Проблема:** Нужна стандартная точка входа для бизнес-логики с единообразной записью ответов.
-
-**Решение:** Структура `Handler` с методами для каждого endpoint. Два хелпера для ответов:
-- `WriteJSON(ctx, status, data)` -- успешный ответ
-- `WriteError(ctx, appErr)` -- ответ с ошибкой в стандартном формате
-
-Шаблон уже содержит `/healthz`, `/readyz` и `/api/v1/example`.
-
-**Как добавить новый endpoint:** см. раздел "Добавление нового endpoint" ниже.
-
-### server
-
-**Проблема:** Нужно зарегистрировать маршруты, применить middleware, запустить сервер и корректно остановить его при shutdown.
-
-**Решение:** Функция `Register()` создаёт fasthttp-сервер и привязывает его start/stop к жизненному циклу `fx`. Каждый маршрут оборачивается в `withRoute()` для передачи шаблона пути в middleware `Metrics`.
-
-**Как добавить маршрут:**
-```go
-r.POST("/api/v1/playlists", withRoute("/api/v1/playlists", h.CreatePlaylist))
-r.GET("/api/v1/playlists/:id", withRoute("/api/v1/playlists/:id", h.GetPlaylist))
-```
-
-> **Про fx:** `go.uber.org/fx` -- это DI-фреймворк. В `main.go` мы описываем, какие компоненты создать (`fx.Provide`) и что запустить (`fx.Invoke`). fx сам разрешает зависимости, создаёт объекты в правильном порядке и управляет shutdown.
-
-### postgres
-
-**Проблема:** Нужен пул соединений с PostgreSQL, интегрированный с трейсингом и проверкой здоровья.
-
-**Решение:** `pgxpool` с настройкой через конфиг (DSN, размер пула, таймауты). Трейсинг через `otelpgx` -- каждый SQL-запрос автоматически создаёт span. Health check через `pool.Ping()`.
-
-**Миграции:** Используется `golang-migrate`. SQL-файлы лежат в `migrations/`. Команды:
-- `make migrate-create` -- создать новую миграцию
-- `make migrate-up` -- применить все pending-миграции
-- `make migrate-down` -- откатить последнюю миграцию
-
-### redis
-
-**Проблема:** Нужен Redis-клиент с пулом соединений, трейсингом и метриками.
-
-**Решение:** `go-redis/v9` с инструментацией через `redisotel` (трейсы + метрики Redis-операций). Health check через `client.Ping()`.
-
-**Как изменить:** Адрес, пароль, номер БД и размер пула -- через конфиг или переменные окружения.
-
-### kafka
-
-**Проблема:** Сервисы обмениваются событиями через Kafka. Нужны producer и consumer с трейсингом.
-
-**Producer:** Обёртка над `segmentio/kafka-go`. При публикации автоматически инжектит OTel trace context в заголовки сообщения. Поддерживает `RequireAll` acks для надёжной доставки.
-
-```go
-err := producer.Publish(ctx, "playlist.updated", []byte(playlistID), eventBytes)
-```
-
-**Consumer:** Читает сообщения в consumer group, извлекает trace context из заголовков. При ошибке обработки -- логирует и коммитит offset (сообщение не блокирует очередь).
-
-```go
-consumer.Run(ctx, func(ctx context.Context, msg kafka.Message) error {
-    // обработка сообщения
-    return nil
-})
-```
-
-**Event Envelope:** Обёртка для всех доменных событий с метаданными:
-
-```json
-{
-  "type": "track.created",
-  "version": 1,
-  "timestamp": "2026-04-11T12:00:00Z",
-  "payload": { "id": "...", "title": "...", "artist": "..." }
-}
-```
-
-Поле `version` позволяет эволюционировать схему событий без breaking changes.
-
-## Быстрый старт
+[![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/golang-migrate/migrate/ci.yaml?branch=master)](https://github.com/golang-migrate/migrate/actions/workflows/ci.yaml?query=branch%3Amaster)
+[![GoDoc](https://pkg.go.dev/badge/github.com/golang-migrate/migrate)](https://pkg.go.dev/github.com/golang-migrate/migrate/v4)
+[![Coverage Status](https://img.shields.io/coveralls/github/golang-migrate/migrate/master.svg)](https://coveralls.io/github/golang-migrate/migrate?branch=master)
+[![packagecloud.io](https://img.shields.io/badge/deb-packagecloud.io-844fec.svg)](https://packagecloud.io/golang-migrate/migrate?filter=debs)
+[![Docker Pulls](https://img.shields.io/docker/pulls/migrate/migrate.svg)](https://hub.docker.com/r/migrate/migrate/)
+![Supported Go Versions](https://img.shields.io/badge/Go-1.20%2C%201.21-lightgrey.svg)
+[![GitHub Release](https://img.shields.io/github/release/golang-migrate/migrate.svg)](https://github.com/golang-migrate/migrate/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/golang-migrate/migrate/v4)](https://goreportcard.com/report/github.com/golang-migrate/migrate/v4)
+
+# migrate
+
+__Database migrations written in Go. Use as [CLI](#cli-usage) or import as [library](#use-in-your-go-project).__
+
+* Migrate reads migrations from [sources](#migration-sources)
+   and applies them in correct order to a [database](#databases).
+* Drivers are "dumb", migrate glues everything together and makes sure the logic is bulletproof.
+   (Keeps the drivers lightweight, too.)
+* Database drivers don't assume things or try to correct user input. When in doubt, fail.
+
+Forked from [mattes/migrate](https://github.com/mattes/migrate)
+
+## Databases
+
+Database drivers run migrations. [Add a new database?](database/driver.go)
+
+* [PostgreSQL](database/postgres)
+* [PGX v4](database/pgx)
+* [PGX v5](database/pgx/v5)
+* [Redshift](database/redshift)
+* [Ql](database/ql)
+* [Cassandra / ScyllaDB](database/cassandra)
+* [SQLite](database/sqlite)
+* [SQLite3](database/sqlite3) ([todo #165](https://github.com/mattes/migrate/issues/165))
+* [SQLCipher](database/sqlcipher)
+* [MySQL / MariaDB](database/mysql)
+* [Neo4j](database/neo4j)
+* [MongoDB](database/mongodb)
+* [CrateDB](database/crate) ([todo #170](https://github.com/mattes/migrate/issues/170))
+* [Shell](database/shell) ([todo #171](https://github.com/mattes/migrate/issues/171))
+* [Google Cloud Spanner](database/spanner)
+* [CockroachDB](database/cockroachdb)
+* [YugabyteDB](database/yugabytedb)
+* [ClickHouse](database/clickhouse)
+* [Firebird](database/firebird)
+* [MS SQL Server](database/sqlserver)
+* [RQLite](database/rqlite)
+
+### Database URLs
+
+Database connection strings are specified via URLs. The URL format is driver dependent but generally has the form: `dbdriver://username:password@host:port/dbname?param1=true&param2=false`
+
+Any [reserved URL characters](https://en.wikipedia.org/wiki/Percent-encoding#Percent-encoding_reserved_characters) need to be escaped. Note, the `%` character also [needs to be escaped](https://en.wikipedia.org/wiki/Percent-encoding#Percent-encoding_the_percent_character)
+
+Explicitly, the following characters need to be escaped:
+`!`, `#`, `$`, `%`, `&`, `'`, `(`, `)`, `*`, `+`, `,`, `/`, `:`, `;`, `=`, `?`, `@`, `[`, `]`
+
+It's easiest to always run the URL parts of your DB connection URL (e.g. username, password, etc) through an URL encoder. See the example Python snippets below:
 
 ```bash
-# Поднять инфраструктуру (PostgreSQL, Redis, Kafka)
-make docker-up-infra
-
-# Сгенерировать Swagger-документацию
-make swagger
-
-# Запустить сервис локально
-make run
-
-# Запустить тесты
-make test
-
-# Поднять всё (сервис + инфра + observability)
-make docker-up-all
-
-# Открыть Swagger UI: http://localhost:8080/swagger/index.html
-# Открыть Grafana:    http://localhost:3000
-# Открыть Jaeger:     http://localhost:16686
+$ python3 -c 'import urllib.parse; print(urllib.parse.quote(input("String to encode: "), ""))'
+String to encode: FAKEpassword!#$%&'()*+,/:;=?@[]
+FAKEpassword%21%23%24%25%26%27%28%29%2A%2B%2C%2F%3A%3B%3D%3F%40%5B%5D
+$ python2 -c 'import urllib; print urllib.quote(raw_input("String to encode: "), "")'
+String to encode: FAKEpassword!#$%&'()*+,/:;=?@[]
+FAKEpassword%21%23%24%25%26%27%28%29%2A%2B%2C%2F%3A%3B%3D%3F%40%5B%5D
+$
 ```
 
-## Добавление нового endpoint
+## Migration Sources
 
-1. **Handler-метод** в `internal/handler/handler.go`:
+Source drivers read migrations from local or remote sources. [Add a new source?](source/driver.go)
+
+* [Filesystem](source/file) - read from filesystem
+* [io/fs](source/iofs) - read from a Go [io/fs](https://pkg.go.dev/io/fs#FS)
+* [Go-Bindata](source/go_bindata) - read from embedded binary data ([jteeuwen/go-bindata](https://github.com/jteeuwen/go-bindata))
+* [pkger](source/pkger) - read from embedded binary data ([markbates/pkger](https://github.com/markbates/pkger))
+* [GitHub](source/github) - read from remote GitHub repositories
+* [GitHub Enterprise](source/github_ee) - read from remote GitHub Enterprise repositories
+* [Bitbucket](source/bitbucket) - read from remote Bitbucket repositories
+* [Gitlab](source/gitlab) - read from remote Gitlab repositories
+* [AWS S3](source/aws_s3) - read from Amazon Web Services S3
+* [Google Cloud Storage](source/google_cloud_storage) - read from Google Cloud Platform Storage
+
+## CLI usage
+
+* Simple wrapper around this library.
+* Handles ctrl+c (SIGINT) gracefully.
+* No config search paths, no config files, no magic ENV var injections.
+
+__[CLI Documentation](cmd/migrate)__
+
+### Basic usage
+
+```bash
+$ migrate -source file://path/to/migrations -database postgres://localhost:5432/database up 2
+```
+
+### Docker usage
+
+```bash
+$ docker run -v {{ migration dir }}:/migrations --network host migrate/migrate
+    -path=/migrations/ -database postgres://localhost:5432/database up 2
+```
+
+## Use in your Go project
+
+* API is stable and frozen for this release (v3 & v4).
+* Uses [Go modules](https://golang.org/cmd/go/#hdr-Modules__module_versions__and_more) to manage dependencies.
+* To help prevent database corruptions, it supports graceful stops via `GracefulStop chan bool`.
+* Bring your own logger.
+* Uses `io.Reader` streams internally for low memory overhead.
+* Thread-safe and no goroutine leaks.
+
+__[Go Documentation](https://pkg.go.dev/github.com/golang-migrate/migrate/v4)__
 
 ```go
-func (h *Handler) GetPlaylist(ctx *fasthttp.RequestCtx) {
-    id := ctx.UserValue("id").(string)
-    // ... бизнес-логика ...
-    WriteJSON(ctx, fasthttp.StatusOK, playlist)
+import (
+    "github.com/golang-migrate/migrate/v4"
+    _ "github.com/golang-migrate/migrate/v4/database/postgres"
+    _ "github.com/golang-migrate/migrate/v4/source/github"
+)
+
+func main() {
+    m, err := migrate.New(
+        "github://mattes:personal-access-token@mattes/migrate_test",
+        "postgres://localhost:5432/database?sslmode=enable")
+    m.Steps(2)
 }
 ```
 
-2. **Swagger-аннотация** (перед методом handler-а):
+Want to use an existing database client?
 
 ```go
-// GetPlaylist godoc
-// @Summary     Получить плейлист
-// @Description Возвращает плейлист по ID.
-// @Tags        playlists
-// @Produce     json
-// @Param       id path string true "ID плейлиста"
-// @Success     200 {object} Playlist
-// @Failure     404 {object} apperror.Response
-// @Router      /api/v1/playlists/{id} [get]
-```
+import (
+    "database/sql"
+    _ "github.com/lib/pq"
+    "github.com/golang-migrate/migrate/v4"
+    "github.com/golang-migrate/migrate/v4/database/postgres"
+    _ "github.com/golang-migrate/migrate/v4/source/file"
+)
 
-После добавления аннотаций выполните `make swagger` для перегенерации документации.
-
-3. **Маршрут** в `internal/server/server.go`:
-
-```go
-r.GET("/api/v1/playlists/:id", withRoute("/api/v1/playlists/:id", h.GetPlaylist))
-```
-
-4. **Валидация** (если endpoint принимает JSON тело):
-
-```go
-var req CreatePlaylistRequest
-if err := validator.BindJSON(ctx, &req); err != nil {
-    WriteError(ctx, err)
-    return
+func main() {
+    db, err := sql.Open("postgres", "postgres://localhost:5432/database?sslmode=enable")
+    driver, err := postgres.WithInstance(db, &postgres.Config{})
+    m, err := migrate.NewWithDatabaseInstance(
+        "file:///migrations",
+        "postgres", driver)
+    m.Up() // or m.Step(2) if you want to explicitly set the number of migrations to run
 }
 ```
 
-5. **Тест** в `internal/handler/handler_test.go`:
+## Getting started
 
-```go
-func TestGetPlaylist(t *testing.T) {
-    h := handler.New(slog.Default())
-    ctx := &fasthttp.RequestCtx{}
-    ctx.SetUserValue("id", "test-id")
-    h.GetPlaylist(ctx)
-    assert.Equal(t, http.StatusOK, ctx.Response.StatusCode())
-}
+Go to [getting started](GETTING_STARTED.md)
+
+## Tutorials
+
+* [CockroachDB](database/cockroachdb/TUTORIAL.md)
+* [PostgreSQL](database/postgres/TUTORIAL.md)
+
+(more tutorials to come)
+
+## Migration files
+
+Each migration has an up and down migration. [Why?](FAQ.md#why-two-separate-files-up-and-down-for-a-migration)
+
+```bash
+1481574547_create_users_table.up.sql
+1481574547_create_users_table.down.sql
 ```
 
-## Создание нового сервиса из шаблона
+[Best practices: How to write migrations.](MIGRATIONS.md)
 
-1. Скопировать директорию `template/` в новую (например, `playlist-service/`)
-2. В `go.mod` изменить `module service` на `module playlist-service`
-3. Обновить все импорты: `service/internal/...` -> `playlist-service/internal/...`
-4. В `config.local.yaml` изменить `service_name`
-5. Добавить доменные пакеты (например, `internal/playlist/`, `internal/repository/`)
-6. Добавить SQL-миграции в `migrations/`
+## Coming from another db migration tool?
 
-## Справочник конфигурации
+Check out [migradaptor](https://github.com/musinit/migradaptor/).
+*Note: migradaptor is not affliated or supported by this project*
 
-| Ключ YAML | Переменная окружения | По умолчанию | Описание |
-|-----------|---------------------|-------------|----------|
-| `service_name` | `SERVICE_NAME` | `service` | Имя сервиса (для логов и трейсов) |
-| `http_port` | `HTTP_PORT` | `8080` | Порт HTTP-сервера |
-| `log_level` | `LOG_LEVEL` | `info` | Уровень логирования: debug, info, warn, error |
-| `shutdown_timeout` | `SHUTDOWN_TIMEOUT` | `15s` | Таймаут graceful shutdown |
-| `tracing_enabled` | `TRACING_ENABLED` | `true` | Включить/выключить трейсинг |
-| `otlp_endpoint` | `OTLP_ENDPOINT` | `localhost:4317` | Адрес OTLP-коллектора |
-| `postgres.dsn` | `POSTGRES_DSN` | `postgres://postgres:postgres@localhost:5432/service?sslmode=disable` | DSN PostgreSQL |
-| `postgres.max_conns` | `POSTGRES_MAX_CONNS` | `10` | Макс. соединений в пуле |
-| `postgres.min_conns` | `POSTGRES_MIN_CONNS` | `2` | Мин. соединений в пуле |
-| `redis.addr` | `REDIS_ADDR` | `localhost:6379` | Адрес Redis |
-| `redis.password` | `REDIS_PASSWORD` | *(пусто)* | Пароль Redis |
-| `redis.db` | `REDIS_DB` | `0` | Номер БД Redis |
-| `redis.pool_size` | `REDIS_POOL_SIZE` | `10` | Размер пула Redis |
-| `kafka.brokers` | `KAFKA_BROKERS` | `localhost:9092` | Адреса Kafka-брокеров |
+## Versions
 
-## Makefile-цели
+Version | Supported? | Import | Notes
+--------|------------|--------|------
+**master** | :white_check_mark: | `import "github.com/golang-migrate/migrate/v4"` | New features and bug fixes arrive here first |
+**v4** | :white_check_mark: | `import "github.com/golang-migrate/migrate/v4"` | Used for stable releases |
+**v3** | :x: | `import "github.com/golang-migrate/migrate"` (with package manager) or `import "gopkg.in/golang-migrate/migrate.v3"` (not recommended) | **DO NOT USE** - No longer supported |
 
-| Цель | Описание |
-|------|----------|
-| `make build` | Собрать бинарник в `./bin/` |
-| `make run` | Запустить сервис локально |
-| `make test` | Запустить тесты с `-race` |
-| `make lint` | Запустить golangci-lint |
-| `make swagger` | Сгенерировать/обновить OpenAPI-спецификацию и Swagger UI |
-| `make docker-build` | Собрать Docker-образ |
-| `make docker-up` | Поднять только сервис |
-| `make docker-up-infra` | Поднять PostgreSQL + Redis + Kafka |
-| `make docker-up-tracing` | Сервис + Jaeger |
-| `make docker-up-metrics` | Сервис + Prometheus + Grafana |
-| `make docker-up-logs` | Сервис + Loki + Promtail + Grafana |
-| `make docker-up-all` | Всё вместе |
-| `make docker-down` | Остановить все контейнеры |
-| `make docker-logs` | Логи сервиса |
-| `make migrate-up` | Применить миграции |
-| `make migrate-down` | Откатить последнюю миграцию |
-| `make migrate-create` | Создать новую миграцию |
+## Development and Contributing
+
+Yes, please! [`Makefile`](Makefile) is your friend,
+read the [development guide](CONTRIBUTING.md).
+
+Also have a look at the [FAQ](FAQ.md).
+
+---
+
+Looking for alternatives? [https://awesome-go.com/#database](https://awesome-go.com/#database).
