@@ -60,3 +60,7 @@ func ToResponse(e *Error) Response {
 		},
 	}
 }
+
+func NewForbidden(msg string) *Error {
+	return &Error{Code: "FORBIDDEN", Message: msg, HTTPStatus: http.StatusForbidden}
+}

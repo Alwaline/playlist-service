@@ -28,7 +28,7 @@ func withRoute(pattern string, next fasthttp.RequestHandler) fasthttp.RequestHan
 }
 
 // Register creates the fasthttp server and binds its start/stop to the fx lifecycle.
-func Register(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, h *handler.Handler) {
+func Register(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, h *handler.Handler, ph *handler.PlaylistHandler) {
 	r := router.New()
 
 	r.GET("/healthz", withRoute("/healthz", h.Healthz))
@@ -36,6 +36,12 @@ func Register(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, h *handle
 	r.GET("/metrics", withRoute("/metrics", fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler())))
 	r.GET("/api/v1/example", withRoute("/api/v1/example", h.Example))
 	r.GET("/swagger/{filepath:*}", withRoute("/swagger", fasthttpadaptor.NewFastHTTPHandler(httpSwagger.WrapHandler)))
+
+	// Playlist routes
+	r.POST("/api/v1/playlists", withRoute("/api/v1/playlists", ph.CreatePlaylist))
+	r.GET("/api/v1/playlists/:id/tracks", withRoute("/api/v1/playlists/:id/tracks", ph.GetPlaylistTracks))
+	r.POST("/api/v1/playlists/:id/tracks", withRoute("/api/v1/playlists/:id/tracks", ph.AddTrack))
+	r.DELETE("/api/v1/playlists/:id/tracks/:track_id", withRoute("/api/v1/playlists/:id/tracks/:track_id", ph.RemoveTrack))
 
 	chain := middleware.Chain(
 		middleware.Recoverer(logger),
