@@ -2,21 +2,24 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/redis/go-redis/v9"
 
 	"playlist-service/internal/domain"
+	"playlist-service/internal/kafka"
 	"playlist-service/internal/repository"
 )
 
 type PlaylistUseCase struct {
-	repo  repository.Playlist
-	cache repository.Cache
+	repo     repository.Playlist
+	cache    repository.Cache
+	producer *kafka.Producer
 }
 
-func NewPlaylistUseCase(repo repository.Playlist, cache repository.Cache) *PlaylistUseCase {
-	return &PlaylistUseCase{repo: repo, cache: cache}
+func NewPlaylistUseCase(repo repository.Playlist, cache repository.Cache, producer *kafka.Producer) *PlaylistUseCase {
+	return &PlaylistUseCase{repo: repo, cache: cache, producer: producer}
 }
 
 func (uc *PlaylistUseCase) CreatePlaylist(ctx context.Context, ownerID, name string) (*domain.Playlist, error) {
@@ -56,6 +59,19 @@ func (uc *PlaylistUseCase) AddTrack(ctx context.Context, ownerID, playlistID str
 	}
 
 	_ = uc.cache.InvalidatePlaylist(ctx, playlistID)
+
+	payload, _ := json.Marshal(map[string]string{
+		"playlist_id": playlistID,
+		"track_id":    meta.TrackID,
+	})
+
+	event, _ := json.Marshal(map[string]any{
+		"type":    "playlist.track_added",
+		"version": 1,
+		"payload": json.RawMessage(payload),
+	})
+
+	_ = uc.producer.Publish(ctx, "playlists", []byte(playlistID), event)
 
 	return nil
 }

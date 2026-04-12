@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
+	"log/slog"
+
 	"go.uber.org/fx"
 
 	"playlist-service/internal/config"
+	"playlist-service/internal/consumer"
 	"playlist-service/internal/handler"
+	"playlist-service/internal/kafka"
 	"playlist-service/internal/logger"
 	"playlist-service/internal/postgres"
 	"playlist-service/internal/redis"
@@ -28,6 +33,7 @@ func main() {
 			logger.New,
 			postgres.New,
 			redis.New,
+			kafka.NewProducer,
 			fx.Annotate(
 				repository.NewPostgresRepo,
 				fx.As(new(repository.Playlist)),
@@ -39,10 +45,25 @@ func main() {
 			usecase.NewPlaylistUseCase,
 			handler.New,
 			handler.NewPlaylistHandler,
+			func(cfg config.Config, log *slog.Logger) *kafka.Consumer {
+				return kafka.NewConsumer(cfg.KafkaConsumer, log)
+			},
+			consumer.NewTrackDeletedConsumer,
 		),
 		fx.Invoke(
 			tracing.Register,
 			server.Register,
+			func(lc fx.Lifecycle, c *kafka.Consumer, h *consumer.TrackDeletedConsumer) {
+				lc.Append(fx.Hook{
+					OnStart: func(ctx context.Context) error {
+						go c.Run(context.Background(), h.Handle)
+						return nil
+					},
+					OnStop: func(ctx context.Context) error {
+						return c.Close()
+					},
+				})
+			},
 		),
 		fx.StopTimeout(cfg.ShutdownTimeout),
 	).Run()
