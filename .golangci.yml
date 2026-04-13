@@ -24,7 +24,11 @@ linters:
     - unconvert
     - unparam
 
-linters-settings:
+formatters:
+  enable:
+    - gofumpt
+
+settings:
   govet:
     enable-all: true
     disable:
@@ -39,8 +43,8 @@ linters-settings:
       - name: unexported-return
         disabled: true
 
-issues:
-  exclude-dirs:
+exclusions:
+  paths:
     - vendor
   max-issues-per-linter: 0
   max-same-issues: 0
