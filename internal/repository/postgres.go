@@ -66,7 +66,7 @@ func (r *PostgresRepo) AddTrack(ctx context.Context, playlistID string, meta *do
 	return err
 }
 
-func (r *PostgresRepo) RemoveTrack(ctx context.Context, playlistID string, trackID string) error {
+func (r *PostgresRepo) RemoveTrack(ctx context.Context, playlistID, trackID string) error {
 	query := `DELETE FROM playlist_tracks WHERE playlist_id = $1 AND track_id = $2`
 	_, err := r.db.Exec(ctx, query, playlistID, trackID)
 	return err

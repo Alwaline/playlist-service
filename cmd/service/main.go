@@ -56,10 +56,14 @@ func main() {
 		fx.Invoke(
 			tracing.Register,
 			server.Register,
-			func(lc fx.Lifecycle, c *kafka.Consumer, h *consumer.TrackDeletedConsumer) {
+			func(lc fx.Lifecycle, c *kafka.Consumer, h *consumer.TrackDeletedConsumer, log *slog.Logger) {
 				lc.Append(fx.Hook{
 					OnStart: func(ctx context.Context) error {
-						go c.Run(context.Background(), h.Handle)
+						go func() {
+							if err := c.Run(context.Background(), h.Handle); err != nil {
+								log.Error("kafka consumer error", "error", err)
+							}
+						}()
 						return nil
 					},
 					OnStop: func(ctx context.Context) error {
