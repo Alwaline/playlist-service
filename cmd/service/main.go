@@ -31,6 +31,9 @@ func main() {
 		fx.Supply(cfg),
 		fx.Provide(
 			logger.New,
+			func(cfg config.Config) postgres.Config { return cfg.Postgres },
+			func(cfg config.Config) redis.Config { return cfg.Redis },
+			func(cfg config.Config) kafka.ProducerConfig { return cfg.Kafka },
 			postgres.New,
 			redis.New,
 			kafka.NewProducer,

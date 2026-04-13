@@ -3,7 +3,7 @@ http_port: "8080"
 log_level: debug
 shutdown_timeout: 15s
 
-tracing_enabled: true
+tracing_enabled: false
 otlp_endpoint: localhost:4317
 
 postgres:

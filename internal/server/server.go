@@ -39,9 +39,9 @@ func Register(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, h *handle
 
 	// Playlist routes
 	r.POST("/api/v1/playlists", withRoute("/api/v1/playlists", ph.CreatePlaylist))
-	r.GET("/api/v1/playlists/:id/tracks", withRoute("/api/v1/playlists/:id/tracks", ph.GetPlaylistTracks))
-	r.POST("/api/v1/playlists/:id/tracks", withRoute("/api/v1/playlists/:id/tracks", ph.AddTrack))
-	r.DELETE("/api/v1/playlists/:id/tracks/:track_id", withRoute("/api/v1/playlists/:id/tracks/:track_id", ph.RemoveTrack))
+	r.GET("/api/v1/playlists/{id}/tracks", withRoute("/api/v1/playlists/{id}/tracks", ph.GetPlaylistTracks))
+	r.POST("/api/v1/playlists/{id}/tracks", withRoute("/api/v1/playlists/{id}/tracks", ph.AddTrack))
+	r.DELETE("/api/v1/playlists/{id}/tracks/{track_id}", withRoute("/api/v1/playlists/{id}/tracks/{track_id}", ph.RemoveTrack))
 
 	chain := middleware.Chain(
 		middleware.Recoverer(logger),
