@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    profiles: [app]
     ports:
       - "8080:8080"
     environment:
@@ -10,17 +11,20 @@ services:
       HTTP_PORT: "8080"
       LOG_LEVEL: "info"
       SHUTDOWN_TIMEOUT: "15s"
-      TRACING_ENABLED: "true"
+      TRACING_ENABLED: "false"
       OTLP_ENDPOINT: "jaeger:4317"
       POSTGRES_DSN: "postgres://postgres:postgres@postgres:5432/service?sslmode=disable"
       REDIS_ADDR: "redis:6379"
       KAFKA_BROKERS: "kafka:9092"
+      KAFKA_CONSUMER_BROKERS: "kafka:9092"
+      KAFKA_CONSUMER_GROUP_ID: "playlist-service"
+      KAFKA_CONSUMER_TOPIC: "tracks"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
       interval: 10s
       timeout: 3s
       retries: 3
-      start_period: 5s
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,8 +79,8 @@ services:
     restart: unless-stopped
 
   jaeger:
-    image: jaegertracing/all-in-one:1.67
-    profiles: [tracing]
+    image: jaegertracing/all-in-one:latest
+    profiles: [ tracing ]
     ports:
       - "16686:16686"
       - "4317:4317"

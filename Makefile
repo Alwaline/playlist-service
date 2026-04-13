@@ -50,9 +50,9 @@ docker-up-metrics:
 docker-up-logs:
 	docker compose --profile logs up -d
 
-# Full observability stack + infra
+# Full observability stack + infra + app
 docker-up-all:
-	docker compose --profile infra --profile tracing --profile metrics --profile logs up -d
+	docker compose --profile app --profile infra --profile tracing --profile metrics --profile logs up -d
 
 docker-down:
 	docker compose --profile infra --profile tracing --profile metrics --profile logs down
