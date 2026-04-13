@@ -55,8 +55,7 @@ docker-up-all:
 	docker compose --profile app --profile infra --profile tracing --profile metrics --profile logs up -d
 
 docker-down:
-	docker compose --profile infra --profile tracing --profile metrics --profile logs down
-
+	docker compose --profile app --profile infra --profile tracing --profile metrics --profile logs down
 docker-logs:
 	docker compose logs -f service
 
