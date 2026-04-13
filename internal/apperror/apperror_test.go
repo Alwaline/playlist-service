@@ -4,11 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"playlist-service/internal/apperror"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-
-	"playlist-service/internal/apperror"
 )
 
 func TestError_Types(t *testing.T) {

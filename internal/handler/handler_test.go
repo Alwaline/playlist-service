@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"playlist-service/internal/handler"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
-
-	"playlist-service/internal/handler"
 )
 
 func TestHealthz(t *testing.T) {

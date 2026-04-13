@@ -2,12 +2,11 @@ package config_test
 
 import (
 	"os"
+	"playlist-service/internal/config"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"playlist-service/internal/config"
 )
 
 func TestLoad_Defaults(t *testing.T) {
@@ -41,7 +40,7 @@ func TestLoad_ConfigFile(t *testing.T) {
 	content := []byte(`service_name: from-file
 http_port: "3000"
 `)
-	require.NoError(t, os.WriteFile(dir+"/config.test.yaml", content, 0o644))
+	require.NoError(t, os.WriteFile(dir+"/config.test.yaml", content, 0o600))
 
 	t.Setenv("CONFIG_NAME", "config.test")
 	origDir, _ := os.Getwd()

@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-
-	"github.com/redis/go-redis/v9"
-
 	"playlist-service/internal/domain"
 	"playlist-service/internal/kafka"
 	"playlist-service/internal/repository"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type PlaylistUseCase struct {

@@ -3,7 +3,6 @@ package logger
 import (
 	"log/slog"
 	"os"
-
 	"playlist-service/internal/config"
 )
 

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"playlist-service/internal/config"
+	"playlist-service/internal/handler"
+	"playlist-service/internal/middleware"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -15,9 +18,6 @@ import (
 	"go.uber.org/fx"
 
 	_ "playlist-service/docs"
-	"playlist-service/internal/config"
-	"playlist-service/internal/handler"
-	"playlist-service/internal/middleware"
 )
 
 func withRoute(pattern string, next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -64,7 +64,8 @@ func Register(lc fx.Lifecycle, cfg config.Config, logger *slog.Logger, h *handle
 
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			ln, err := net.Listen("tcp", addr)
+			lc := &net.ListenConfig{}
+			ln, err := lc.Listen(ctx, "tcp", addr)
 			if err != nil {
 				return fmt.Errorf("listen %s: %w", addr, err)
 			}

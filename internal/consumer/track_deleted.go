@@ -4,10 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"playlist-service/internal/repository"
 
 	"github.com/segmentio/kafka-go"
-
-	"playlist-service/internal/repository"
 )
 
 type TrackDeletedConsumer struct {

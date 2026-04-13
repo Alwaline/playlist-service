@@ -2,13 +2,12 @@ package handler
 
 import (
 	"errors"
-
-	"github.com/valyala/fasthttp"
-
 	"playlist-service/internal/apperror"
 	"playlist-service/internal/domain"
 	"playlist-service/internal/usecase"
 	"playlist-service/internal/validator"
+
+	"github.com/valyala/fasthttp"
 )
 
 type PlaylistHandler struct {

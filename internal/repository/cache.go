@@ -3,11 +3,10 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"playlist-service/internal/domain"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"playlist-service/internal/domain"
 )
 
 const playlistTTL = 5 * time.Minute

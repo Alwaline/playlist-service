@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-
-	"go.uber.org/fx"
-
 	"playlist-service/internal/config"
 	"playlist-service/internal/consumer"
 	"playlist-service/internal/handler"
@@ -17,6 +14,8 @@ import (
 	"playlist-service/internal/server"
 	"playlist-service/internal/tracing"
 	"playlist-service/internal/usecase"
+
+	"go.uber.org/fx"
 )
 
 // @title           Playlist Service API
@@ -60,7 +59,7 @@ func main() {
 				lc.Append(fx.Hook{
 					OnStart: func(ctx context.Context) error {
 						go func() {
-							if err := c.Run(context.Background(), h.Handle); err != nil {
+							if err := c.Run(ctx, h.Handle); err != nil {
 								log.Error("kafka consumer error", "error", err)
 							}
 						}()
